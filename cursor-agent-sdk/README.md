@@ -9,7 +9,6 @@ The output below is from 2026-10-27, against Substrate `551dd54e`.
 ```ts
 import { defineAgent } from "@grok/agent-sdk";
 
-// The Plus plan serves composer-2.5 only with its fixed settings.
 export default defineAgent({
   model: { id: "composer-2.5", params: [{ id: "fast", value: "false" }] },
   local: { workspaceDir: "/workspace/project" },
@@ -23,6 +22,8 @@ CMD ["/app/node_modules/.bin/agent-sdk", "serve", "--dir", "/app", "--mode", "si
      "--host", "0.0.0.0", "--port", "80", "--state-root", "/workspace/state", \
      "--allow-anonymous", "--no-playground", "--no-docs"]
 ```
+
+Substrate ignores the image's `WORKDIR`, so the `CMD` uses absolute paths.
 
 ## How it works
 
@@ -187,8 +188,3 @@ demo-agent-fork  hi\n2026\n42\n
 ```
 
 Seven turns on this session, including the interruption test, cost $0.094 of Cursor usage (`/v1/session/:id/cost`).
-
-## Notes
-
-- The Plus plan serves `composer-2.5` only with `fast=false`. A plain `model: "composer-2.5"` fails with "Model unavailable on Plus".
-- Substrate ignores the image's `WORKDIR`, so the `CMD` uses absolute paths.
