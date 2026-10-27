@@ -70,11 +70,61 @@ Not exercised in this demo. Per the `pi-durable` README, work interrupted by a c
 
 ## Quickstart (local Kubernetes with kind)
 
-### 1. Set up the cluster
+Run the commands from this directory.
 
-Follow [../setup/README.md](../setup/README.md): install Substrate, keep the worker image ref in `$WORKER`, start the client pod, and grant `ate-demo-pi` its namespace for credential injection. Run the commands below from this directory.
+### 1. Install Agent Substrate
 
-### 2. Build and deploy the agent template
+You need Go, Docker and `kubectl`. This creates a local kind cluster with Agent Substrate at commit `551dd54e` (2026-10-27):
+
+```bash
+git clone https://github.com/agent-substrate/substrate.git ~/substrate
+cd ~/substrate && git checkout 551dd54e
+hack/create-kind-cluster.sh
+hack/install-ate-kind.sh deploy ate-system \
+  --credential-provider='{"name":"k8s.io"}' \
+  --ingress-allowed-spiffe-ids=spiffe://cluster.local/ns/default/sa/default
+hack/install-ate-kind.sh publish worker-images   # prints the ateworker-gvisor ref
+go install ./cmd/kubectl-ate
+cd -
+```
+
+`publish worker-images` prints a ref like `localhost:5001/ateworker-gvisor@sha256:...`. `workerpool.yaml` names the worker image as `ko://go.ate.dev/substrate/cmd/ateworker-gvisor`, and the commands below substitute the ref for it. Keep it in a variable:
+
+```bash
+WORKER=localhost:5001/ateworker-gvisor@sha256:...
+```
+
+The bundled credential provider denies every atespace by default. Grant `ate-demo-pi` its own namespace, and restart the provider, which reads the policy only at startup:
+
+```bash
+kubectl -n ate-system patch configmap k8s-credential-provider-namespace-policy --type merge -p '
+data:
+  namespace-policy.yaml: |
+    policies:
+    - atespace: ate-demo-pi
+      allowedNamespaces:
+      - ate-demo-pi
+'
+kubectl -n ate-system rollout restart deployment/k8s-credential-provider
+```
+
+The patch replaces the whole policy, so if other atespaces already have grants, list them too.
+
+A 2-core kind node fits one worker. If another worker pool is already running, scale it to zero first.
+
+### 2. Start the router proxy
+
+The Substrate router accepts only mutual TLS from pod identities on its allowlist. The install above allows the `default` service account in the `default` namespace. `router-proxy.yaml` is an nginx pod with that identity that takes plain HTTP and forwards it to the router with its own client certificate. Start it, and port-forward to it in a separate terminal:
+
+```bash
+kubectl apply -f router-proxy.yaml
+kubectl wait --for=condition=Ready pod/router-proxy
+kubectl port-forward pod/router-proxy 8000:80
+```
+
+Requests to `localhost:8000` reach the actor named in the `ate-target-actor` header.
+
+### 3. Build and deploy the agent template
 
 Build the agent image, deploy the worker pool and actor template, and store your `GEMINI_API_KEY` in a Kubernetes Secret for the egress proxy:
 
@@ -92,13 +142,13 @@ kubectl -n ate-demo-pi create secret generic llm-credentials \
   --from-literal=gemini-api-key="$GEMINI_API_KEY"
 ```
 
-### 3. Create an actor and run Turn 1
+### 4. Create an actor and run Turn 1
 
 ```bash
 kubectl ate create actor demo-agent --template pi-durable-data -a ate-demo-pi
 kubectl ate create egress-policy demo-agent -a ate-demo-pi -f egress-policy.yaml
 
-../setup/ate-curl ate-demo-pi/demo-agent /submit \
+curl -sS -H "ate-target-actor: ate-demo-pi/demo-agent" localhost:8000/submit \
   -H "Content-Type: application/json" \
   -d '{"prompt": "Create app.js with add(a, b) and a test.js that verifies it."}'
 ```
@@ -124,7 +174,7 @@ Response snippet:
 }
 ```
 
-### 4. Suspend, tag a checkpoint, and fork
+### 5. Suspend, tag a checkpoint, and fork
 
 ```bash
 # Suspend the actor (flushes SQLite and snapshots /workspace to object storage)
@@ -136,18 +186,18 @@ kubectl ate create actor demo-agent-fork --template pi-durable-data --tag checkp
 kubectl ate create egress-policy demo-agent-fork -a ate-demo-pi -f egress-policy.yaml
 ```
 
-### 5. Send divergent prompts to both branches
+### 6. Send divergent prompts to both branches
 
 Both actors auto-resume on demand from the shared Turn 1 history (`entry: 7..21`) and diverge on Turn 2 (`entry: 22`):
 
 ```bash
 # Original actor continues on Branch A
-../setup/ate-curl ate-demo-pi/demo-agent /submit \
+curl -sS -H "ate-target-actor: ate-demo-pi/demo-agent" localhost:8000/submit \
   -H "Content-Type: application/json" \
   -d '{"prompt": "Add multiply(a, b) and structured logging to app.js."}'
 
 # Forked actor continues on Branch B
-../setup/ate-curl ate-demo-pi/demo-agent-fork /submit \
+curl -sS -H "ate-target-actor: ate-demo-pi/demo-agent-fork" localhost:8000/submit \
   -H "Content-Type: application/json" \
   -d '{"prompt": "Add divide(a, b) and edge-case tests to test.js."}'
 ```

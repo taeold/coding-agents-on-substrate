@@ -1,6 +1,0 @@
-#!/bin/sh
-# Usage: ate-curl <atespace>/<actor> <path> [curl args...]
-target=$1; path=$2; shift 2
-exec kubectl exec -i client -- curl -sS --cert /certs/credential-bundle.pem --key /certs/credential-bundle.pem \
-  --cacert /certs/router-ca.pem -H "ate-target-actor: $target" \
-  "https://atenet-router.ate-system.svc$path" "$@"

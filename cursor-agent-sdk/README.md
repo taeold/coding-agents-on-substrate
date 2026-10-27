@@ -29,10 +29,45 @@ long as a turn's stream is open.
 
 ## Quickstart (local kind)
 
-Substrate at commit `551dd54e` (2026-10-27). Follow
-[../setup/README.md](../setup/README.md) first: install Substrate, keep the
-worker image ref in `$WORKER`, and start the client pod. Run the commands
-below from this directory.
+Run the commands from this directory.
+
+### 1. Install Agent Substrate
+
+You need Go, Docker and `kubectl`. This creates a local kind cluster with Agent Substrate at commit `551dd54e` (2026-10-27):
+
+```bash
+git clone https://github.com/agent-substrate/substrate.git ~/substrate
+cd ~/substrate && git checkout 551dd54e
+hack/create-kind-cluster.sh
+hack/install-ate-kind.sh deploy ate-system \
+  --credential-provider='{"name":"k8s.io"}' \
+  --ingress-allowed-spiffe-ids=spiffe://cluster.local/ns/default/sa/default
+hack/install-ate-kind.sh publish worker-images   # prints the ateworker-gvisor ref
+go install ./cmd/kubectl-ate
+cd -
+```
+
+`publish worker-images` prints a ref like `localhost:5001/ateworker-gvisor@sha256:...`. `workerpool.yaml` names the worker image as `ko://go.ate.dev/substrate/cmd/ateworker-gvisor`, and the commands below substitute the ref for it. Keep it in a variable:
+
+```bash
+WORKER=localhost:5001/ateworker-gvisor@sha256:...
+```
+
+A 2-core kind node fits one worker. If another worker pool is already running, scale it to zero first.
+
+### 2. Start the router proxy
+
+The Substrate router accepts only mutual TLS from pod identities on its allowlist. The install above allows the `default` service account in the `default` namespace. `router-proxy.yaml` is an nginx pod with that identity that takes plain HTTP and forwards it to the router with its own client certificate. Start it, and port-forward to it in a separate terminal:
+
+```bash
+kubectl apply -f router-proxy.yaml
+kubectl wait --for=condition=Ready pod/router-proxy
+kubectl port-forward pod/router-proxy 8000:80
+```
+
+Requests to `localhost:8000` reach the actor named in the `ate-target-actor` header.
+
+### 3. Deploy the agent
 
 Build the agent image and deploy the worker pool and template. The template
 carries the Cursor key as a plain env var (see "Egress" below for why).
@@ -52,10 +87,10 @@ kubectl ate create actor demo-agent --template cursor-agent -a ate-demo-cursor
 kubectl ate create egress-policy demo-agent -a ate-demo-cursor -f egress-policy.yaml
 ```
 
-Requests go through the client pod:
+Check that the actor answers:
 
 ```bash
-../setup/ate-curl ate-demo-cursor/demo-agent /v1/info
+curl -sS -H "ate-target-actor: ate-demo-cursor/demo-agent" localhost:8000/v1/info
 ```
 
 ## Demo
@@ -64,10 +99,11 @@ Turn 1 creates a session. The actor wakes from `SUSPENDED` (the template's
 golden snapshot) and answers in about 7 s; the turn itself took 10 s.
 
 ```bash
-../setup/ate-curl ate-demo-cursor/demo-agent /v1/session -X POST -H 'content-type: application/json' \
+curl -sS -H "ate-target-actor: ate-demo-cursor/demo-agent" localhost:8000/v1/session \
+  -H 'content-type: application/json' \
   -d '{"message":"Create hello.js that prints hi, run it with node, and report the output."}'
 # {"ok":true,"sessionId":"ses_d638…","continuationToken":"http:…"}
-../setup/ate-curl ate-demo-cursor/demo-agent /v1/session/ses_d638…/stream?startIndex=0 -N
+curl -sS -N -H "ate-target-actor: ate-demo-cursor/demo-agent" "localhost:8000/v1/session/ses_d638…/stream?startIndex=0"
 ```
 
 ```
@@ -83,7 +119,8 @@ continuation token is accepted, and the agent reads the file it wrote before.
 
 ```bash
 kubectl ate suspend actor demo-agent -a ate-demo-cursor
-../setup/ate-curl ate-demo-cursor/demo-agent /v1/session/ses_d638… -X POST -H 'content-type: application/json' \
+curl -sS -H "ate-target-actor: ate-demo-cursor/demo-agent" "localhost:8000/v1/session/ses_d638…" \
+  -H 'content-type: application/json' \
   -d '{"continuationToken":"http:…","message":"Change hello.js so it also prints the current year, run it again, and tell me what it printed."}'
 ```
 

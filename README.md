@@ -16,6 +16,4 @@ The interruption behavior described for Pi and libfx comes from each library's R
 
 ## Setup
 
-All three demos share one local kind cluster and one client pod. See [setup/README.md](setup/README.md).
-
-This repo was named `pi-durable-substrate` until 2026-10-27. GitHub redirects the old name.
+Each demo is standalone. Its README installs Agent Substrate on a local kind cluster, starts a small proxy for sending requests to actors, and runs the demo from there. The demos can share one cluster.

@@ -1,0 +1,65 @@
+# A plain-HTTP proxy to the Agent Substrate router. The router accepts only
+# mutual TLS from pod identities on its allowlist; this pod runs as the
+# `default` service account in `default`, which the install allows, and
+# forwards whatever you send it with its own client certificate. Reach it with
+#   kubectl port-forward pod/router-proxy 8000:80
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: router-proxy
+  namespace: default
+data:
+  default.conf: |
+    server {
+      listen 80;
+      location / {
+        # Variables make nginx reread the files per request, so it picks up
+        # rotated certificates.
+        set $bundle /certs/credential-bundle.pem;
+        proxy_ssl_certificate $bundle;
+        proxy_ssl_certificate_key $bundle;
+        proxy_ssl_trusted_certificate /certs/router-ca.pem;
+        proxy_ssl_verify on;
+        proxy_ssl_server_name on;
+        proxy_ssl_name atenet-router.ate-system.svc;
+        proxy_pass https://atenet-router.ate-system.svc;
+        proxy_set_header Host atenet-router.ate-system.svc;
+        proxy_http_version 1.1;
+        proxy_buffering off;
+        proxy_read_timeout 1h;
+      }
+    }
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: router-proxy
+  namespace: default
+spec:
+  containers:
+  - name: nginx
+    image: nginx:1.29-alpine
+    ports:
+    - containerPort: 80
+    volumeMounts:
+    - name: conf
+      mountPath: /etc/nginx/conf.d
+    - name: router-client
+      mountPath: /certs
+  volumes:
+  - name: conf
+    configMap:
+      name: router-proxy
+  - name: router-client
+    projected:
+      sources:
+      - podCertificate:
+          signerName: podidentity.podcert.ate.dev/identity
+          keyType: ECDSAP256
+          credentialBundlePath: credential-bundle.pem
+      - clusterTrustBundle:
+          signerName: servicedns.podcert.ate.dev/identity
+          labelSelector:
+            matchLabels:
+              podcert.ate.dev/canarying: live
+          path: router-ca.pem
