@@ -1,25 +1,21 @@
 # coding-agents-on-substrate
 
-Open-source coding harnesses and agent SDKs running as durable actors on
-[Agent Substrate](https://github.com/agent-substrate/substrate). Each actor
-keeps its working files and its session state on a durable `/workspace`
-volume. Each demo covers waking an actor from suspend, tagging it and forking
-a second actor from the tag, and what happens to a turn that is interrupted
-midway.
+Durable AI coding agents running on [Agent Substrate](https://github.com/agent-substrate/substrate).
 
-| Harness | Where the loop runs | Where tools run | Where session state lives | Mid-turn interruption | Demo |
-|---|---|---|---|---|---|
-| Pi (`@earendil-works/pi-durable`) | In the actor | In the actor, through `NodeExecutionEnv` | SQLite at `/workspace/.pi/agent.sqlite` | `harness.resume()` continues the turn on the next wake. A tool call cut off midway returns `interrupted` to the model unless the tool is replay-safe. | [pi-durable](pi-durable) |
-| libfx | In the actor, in libfx's Zig engine | In the server process (`tools.ts`) | Journal files under `/workspace/.fx/sessions` | The turn continues from its last stored step on the next wake, and the model is told it was interrupted. | [libfx](libfx) |
-| Cursor Agent SDK | At Cursor, over a stream the actor opens for each turn | In the actor | Conversation blobs in `/workspace/state`, written when Cursor sends them | The turn is lost. The next turn sees the interrupted call in its history. | [cursor-agent-sdk](cursor-agent-sdk) |
+Each demo runs one agent as a Substrate actor. The agent's working files and its conversation history both live in `/workspace`, which Agent Substrate mounts as a persistent directory, so a snapshot captures both at the same point in time. Each demo walks through suspending and waking an actor, tagging it and forking a second actor from the tag, and what happens to a turn that is interrupted midway.
 
-The Pi and libfx interruption cells come from each library's README. Only the
-Cursor demo has run an interrupted turn.
+## Demos
+
+**[pi-durable](pi-durable).** A coding agent built with [@earendil-works/pi-durable](https://github.com/earendil-works/pi/tree/main/packages/durable). The agent loop and its tools run inside the actor, and the conversation is stored in SQLite at `/workspace/.pi/agent.sqlite`. If a turn is interrupted, `harness.resume()` continues it on the next wake. A tool call that was cut off midway returns `interrupted` to the model unless the tool is replay-safe.
+
+**[libfx](libfx).** A coding agent built with [libfx](https://fx.sh/docs/lib). The loop runs inside the actor in libfx's Zig engine, and the tools run in the server process (`tools.ts`). Sessions are journal files under `/workspace/.fx/sessions`. An interrupted turn continues from its last stored step on the next wake, and the model is told it was interrupted.
+
+**[cursor-agent-sdk](cursor-agent-sdk).** An agent built with the [Cursor Agent SDK](https://cursor.com/docs/agent-sdk). Unlike the other two, the loop and the model run at Cursor, over a stream the actor opens for each turn. Cursor sends tool calls down the stream, the actor runs them, and the actor stores the conversation blobs Cursor sends back in `/workspace/state`. An interrupted turn is lost, and the next turn sees the interrupted call in its history.
+
+The interruption behavior described for Pi and libfx comes from each library's README. Only the Cursor demo has been run through an interrupted turn.
 
 ## Setup
 
-All three demos share one local kind cluster and one client pod. See
-[setup/README.md](setup/README.md).
+All three demos share one local kind cluster and one client pod. See [setup/README.md](setup/README.md).
 
-This repo was named `pi-durable-substrate` until 2026-10-27. GitHub redirects
-the old name.
+This repo was named `pi-durable-substrate` until 2026-10-27. GitHub redirects the old name.
