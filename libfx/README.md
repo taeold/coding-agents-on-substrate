@@ -50,17 +50,14 @@ server.listen(80, "0.0.0.0");
 
 ## How it works
 
-An AI coding agent has two kinds of state: the files it edits in the working directory, and its conversation history. This setup puts both inside `/workspace`, which Agent Substrate mounts as a persistent directory. `libfx` writes its session files to `/workspace/.fx/sessions`, and the agent's tools read and write code in `/workspace`.
+`libfx` runs the coding agent loop and writes every session step and streamed event to journal files under `/workspace/.fx/sessions`. When the server starts, it opens the existing session from `/workspace/.fx/sessions/runs` if there is one, and starts a new session otherwise, so one actor holds one conversation.
 
-Because each actor has its own `/workspace`, one actor holds one conversation. When the server starts, it checks `/workspace/.fx/sessions/runs` for an existing session file. On a fresh actor the folder is empty, so `libfx` starts a new session. When an actor wakes up from a snapshot or starts from a fork, the server finds the existing session file and continues that conversation.
+Agent Substrate runs each agent as an isolated actor with `/workspace` mounted as a durable directory (`durableDir` in `template.yaml`).
 
-**Suspend and wake.** When you suspend an actor, Agent Substrate sends `SIGTERM` to the container. The server closes the `libfx` agent to flush any open state, and Agent Substrate snapshots `/workspace` to object storage before stopping the container. When a new HTTP request arrives for a suspended actor, the router restores `/workspace` onto a worker pod, waits for `/readyz`, and forwards the request.
-
-**Forking.** Because the conversation history and the working files live on the same volume, snapshotting an actor captures both at the same point in time. You can tag a suspended actor's snapshot and create a second actor from that tag. Both actors wake up with the same prior turns and files, and diverge from there as you send them different prompts.
-
-**Streaming and replay.** `libfx` writes every streamed event to disk with a sequence number called a cursor. Posting a prompt to `/submit` streams those events back as newline-delimited JSON while the turn runs. If a client disconnects, or if you want to inspect an actor after it wakes or forks, requesting `/events` with a cursor replays the saved events after that point and stays open for new ones.
-
-**Credentials.** The container only sees a placeholder API key. Outbound requests to `ai-gateway.vercel.sh` pass through the Agent Substrate egress proxy, which swaps in the real key from a Kubernetes secret. The real key never enters the container or the volume snapshots.
+1. **Suspend and auto-resume**: When you suspend an actor (`kubectl ate suspend actor`), Agent Substrate sends `SIGTERM` so the server closes the `libfx` agent and flushes its session files, snapshots `/workspace` to object storage, and stops the container. When the next HTTP request arrives for that actor, the router restores `/workspace` onto a worker pod and wakes the server back up before forwarding the request. The server finds the existing session and continues it.
+2. **Checkpoint and fork**: Because both the session files (`.fx/sessions`) and the working files live in `/workspace`, you can tag a suspended actor (`kubectl ate create tag`) and create a new actor from that tag (`kubectl ate create actor --tag`). Both actors start from the same history and files, then diverge on subsequent requests.
+3. **Streaming and replay**: Every streamed event has a sequence number called a cursor. Posting a prompt to `/submit` streams events back as newline-delimited JSON while the turn runs. `/events?cursor=N` replays the saved events after `N` and stays open for new ones, so you can reattach after a disconnect, a wake or a fork.
+4. **Egress credential injection**: The sandbox runs with a placeholder `AI_GATEWAY_API_KEY`. Outbound calls to `ai-gateway.vercel.sh` pass through the Agent Substrate egress proxy, which injects the real API key from the Kubernetes Secret that `egress-policy.yaml` names, so secrets never enter the sandbox or its snapshots.
 
 ## Mid-turn interruption
 

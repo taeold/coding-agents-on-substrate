@@ -1,33 +1,58 @@
 # cursor-agent-sdk
 
-A [Cursor Agent SDK](https://cursor.com/docs/agent-sdk) agent running as an
-[Agent Substrate](https://github.com/agent-substrate/substrate) actor, with the
-same layout as [pi-durable](../pi-durable).
+A simple durable AI coding agent built with the [Cursor Agent SDK](https://cursor.com/docs/agent-sdk) running on [Agent Substrate](https://github.com/agent-substrate/substrate).
 
-The agent is the smallest Agent SDK project that does anything: `bot/agent.ts`
-picks the model, `bot/instructions.md` says "write the files you are asked for
-and run them". The image runs `agent-sdk serve` with its state root on the
-actor's durable `/workspace` volume, so sessions, conversation checkpoints and
-the memory journal are all inside Substrate's snapshot.
+The output below is from 2026-10-27, against Substrate `551dd54e`.
 
-## What runs where
+## agent/bot/agent.ts
 
-The Agent SDK is not a harness you host. Per turn, the server you run opens a
-stream to `api2.cursor.sh` (`agent.v1.AgentService/Run`). Cursor's server runs
-the loop and the model and sends tool calls down the stream (`shell`, `read`,
-`write`, `grep`, your MCP tools). Your process executes them and stores the
-conversation blobs Cursor hands back (`kv get_blob`/`set_blob`). So:
+```ts
+import { defineAgent } from "@grok/agent-sdk";
 
-| | Where |
-|---|---|
-| Loop and model | Cursor |
-| Shell and file tools | The actor |
-| Conversation state | The actor's `/workspace/state` |
+// The Plus plan serves composer-2.5 only with its fixed settings.
+export default defineAgent({
+  model: { id: "composer-2.5", params: [{ id: "fast", value: "false" }] },
+  local: { workspaceDir: "/workspace/project" },
+});
+```
 
-The actor is the agent's hands and memory. The brain lives at Cursor for as
-long as a turn's stream is open.
+`agent/bot/instructions.md` tells the agent to write the files it is asked for, run them to check they work, and end with one sentence on what it did. There is no server code: the image runs the SDK's own server, with its state root on `/workspace`:
 
-## Quickstart (local kind)
+```dockerfile
+CMD ["/app/node_modules/.bin/agent-sdk", "serve", "--dir", "/app", "--mode", "single", \
+     "--host", "0.0.0.0", "--port", "80", "--state-root", "/workspace/state", \
+     "--allow-anonymous", "--no-playground", "--no-docs"]
+```
+
+## How it works
+
+Unlike a harness you host, the Agent SDK runs the agent loop and the model at Cursor. For each turn, `agent-sdk serve` opens a stream to `api2.cursor.sh`. Cursor sends tool calls down the stream (`shell`, `read`, `write`, `grep`), the server runs them in the actor, and it stores the conversation blobs Cursor sends back under `/workspace/state`. The actor holds the agent's files and its memory; the loop lives at Cursor for as long as a turn's stream is open.
+
+Agent Substrate runs each agent as an isolated actor with `/workspace` mounted as a durable directory (`durableDir` in `template.yaml`). The SDK's sessions, conversation checkpoints and memory journal all live in `/workspace/state`, and the agent's project files in `/workspace/project`.
+
+1. **Suspend and auto-resume**: When you suspend an actor (`kubectl ate suspend actor`), Agent Substrate snapshots `/workspace` to object storage and stops the container. When the next HTTP request arrives for that actor, the router restores `/workspace` onto a worker pod and wakes the server before forwarding the request. The session, its event index and its continuation token all carry over.
+2. **Checkpoint and fork**: Because the conversation state and the working files live in `/workspace`, you can tag a suspended actor (`kubectl ate create tag`) and create a new actor from that tag (`kubectl ate create actor --tag`). Both actors continue the same session from the same files, then diverge on subsequent requests.
+3. **No credential injection**: The Pi and libfx demos keep a placeholder key in the sandbox and let the egress proxy swap in the real one. That does not work for this SDK. It posts the raw key once to `api2.cursor.sh/auth/exchange_user_api_key`, gets a JWT, and sends the JWT on every other `api2.cursor.sh` call. Substrate's egress rules match hostname and port, not path, so a header replacement on `api2.cursor.sh` would overwrite the JWT too, and Cursor answers 401. The template therefore carries the real `CURSOR_API_KEY`, and `egress-policy.yaml` only allows the Cursor hosts. A path-scoped rule would fix this.
+
+## Mid-turn interruption
+
+Exercised in this demo. The agent was asked to run a script that sleeps 25 s, and the actor was suspended 2 s after the `shell` call started:
+
+```
+239 actions.requested  shell {"command":"node /workspace/project/wait.js","timeout":60000}
+    (suspend; no further event for this turn)
+```
+
+After the wake:
+
+- The interrupted turn has no terminal event. The event log just stops.
+- A follow-up sent 3 s after the wake was accepted (HTTP 200, new token) but did not start a turn until the next message arrived five minutes later. The SDK keeps a per-session lock file under the state root with a 30 s staleness window. The snapshot restored it with a fresh mtime, so the new server treated the dead turn as live and queued the message.
+- Each new message preempts the running turn (the SDK's default), so two follow-ups cancelled the recovery turns.
+- Once a turn ran undisturbed, the agent found the interrupted call in its history ("both `node wait.js` runs were interrupted before the shell tool returned") and offered to rerun it. Told to go ahead, it ran the script and reported `done` after 25.3 s.
+
+So the turn in flight is lost, and the next turn sees the interrupted call in its history.
+
+## Quickstart (local Kubernetes with kind)
 
 Run the commands from this directory.
 
@@ -67,10 +92,9 @@ kubectl port-forward pod/router-proxy 8000:80
 
 Requests to `localhost:8000` reach the actor named in the `ate-target-actor` header.
 
-### 3. Deploy the agent
+### 3. Build and deploy the agent template
 
-Build the agent image and deploy the worker pool and template. The template
-carries the Cursor key as a plain env var (see "Egress" below for why).
+Build the agent image, deploy the worker pool and actor template. The template carries your `CURSOR_API_KEY` as a plain env var (see "No credential injection" above):
 
 ```bash
 docker build -t localhost:5001/cursor-agent:latest ./agent
@@ -82,29 +106,25 @@ kubectl ate create atespace ate-demo-cursor
 sed "s|image: IMAGE|image: $IMAGE|; s|value: crsr_0*|value: $CURSOR_API_KEY|" template.yaml \
   | kubectl ate create actor-template -f -
 kubectl ate get actor-template cursor-agent -a ate-demo-cursor   # wait for GOLDEN TAG
+```
 
+### 4. Create an actor and run Turn 1
+
+Creating a session starts the first turn. Its events stream from `/stream`:
+
+```bash
 kubectl ate create actor demo-agent --template cursor-agent -a ate-demo-cursor
 kubectl ate create egress-policy demo-agent -a ate-demo-cursor -f egress-policy.yaml
-```
 
-Check that the actor answers:
-
-```bash
-curl -sS -H "ate-target-actor: ate-demo-cursor/demo-agent" localhost:8000/v1/info
-```
-
-## Demo
-
-Turn 1 creates a session. The actor wakes from `SUSPENDED` (the template's
-golden snapshot) and answers in about 7 s; the turn itself took 10 s.
-
-```bash
 curl -sS -H "ate-target-actor: ate-demo-cursor/demo-agent" localhost:8000/v1/session \
-  -H 'content-type: application/json' \
-  -d '{"message":"Create hello.js that prints hi, run it with node, and report the output."}'
+  -H "Content-Type: application/json" \
+  -d '{"message": "Create hello.js that prints hi, run it with node, and report the output."}'
 # {"ok":true,"sessionId":"ses_d638…","continuationToken":"http:…"}
+
 curl -sS -N -H "ate-target-actor: ate-demo-cursor/demo-agent" "localhost:8000/v1/session/ses_d638…/stream?startIndex=0"
 ```
+
+Event snippet (index, type, payload). The actor woke from the template's golden snapshot and answered in about 7 s; the turn took 10 s:
 
 ```
 16 actions.requested  Write {"path":"/workspace/project/hello.js","contents":"console.log('hi');\n"}
@@ -113,16 +133,19 @@ curl -sS -N -H "ate-target-actor: ate-demo-cursor/demo-agent" "localhost:8000/v1
 65 turn.completed     "Created `hello.js` with `console.log('hi')` and ran `node hello.js`; it exited 0 and printed: hi"
 ```
 
-Suspend, then wake with a follow-up on the same session. The actor went
-`SUSPENDED` to answering in 8 s. The event index continues (67), the
-continuation token is accepted, and the agent reads the file it wrote before.
+### 5. Suspend and wake with Turn 2
+
+Posting to the session with its continuation token wakes the actor and continues the same session:
 
 ```bash
 kubectl ate suspend actor demo-agent -a ate-demo-cursor
+
 curl -sS -H "ate-target-actor: ate-demo-cursor/demo-agent" "localhost:8000/v1/session/ses_d638…" \
-  -H 'content-type: application/json' \
-  -d '{"continuationToken":"http:…","message":"Change hello.js so it also prints the current year, run it again, and tell me what it printed."}'
+  -H "Content-Type: application/json" \
+  -d '{"continuationToken": "http:…", "message": "Change hello.js so it also prints the current year, run it again, and tell me what it printed."}'
 ```
+
+The actor went from `SUSPENDED` to answering in 8 s. The event index continues from 67, and the agent reads the file it wrote before:
 
 ```
 79  action.result   Read  "console.log('hi');"
@@ -130,59 +153,42 @@ curl -sS -H "ate-target-actor: ate-demo-cursor/demo-agent" "localhost:8000/v1/se
 136 turn.completed  "`hello.js` now logs `hi` and the current year…"
 ```
 
-Tag and fork. Both branches start from the two turns above and diverge.
+### 6. Suspend, tag a checkpoint, and fork
 
 ```bash
 kubectl ate suspend actor demo-agent -a ate-demo-cursor
+
 kubectl ate create tag checkpoint-v1 --actor demo-agent -a ate-demo-cursor
 kubectl ate create actor demo-agent-fork --template cursor-agent --tag checkpoint-v1 -a ate-demo-cursor
 kubectl ate create egress-policy demo-agent-fork -a ate-demo-cursor -f egress-policy.yaml
 ```
 
+### 7. Send divergent prompts to both branches
+
+Both actors continue the same session from the two turns above, using the continuation token from Turn 2, and diverge:
+
+```bash
+# Original actor continues on Branch A
+curl -sS -H "ate-target-actor: ate-demo-cursor/demo-agent" "localhost:8000/v1/session/ses_d638…" \
+  -H "Content-Type: application/json" \
+  -d '{"continuationToken": "http:…", "message": "Add add(a, b), call it with 2 and 3"}'
+
+# Forked actor continues on Branch B
+curl -sS -H "ate-target-actor: ate-demo-cursor/demo-agent-fork" "localhost:8000/v1/session/ses_d638…" \
+  -H "Content-Type: application/json" \
+  -d '{"continuationToken": "http:…", "message": "Add multiply(a, b), call it with 6 and 7"}'
 ```
-demo-agent-fork  "Add multiply(a, b), call it with 6 and 7"  ->  stdout "hi\n2026\n42\n"
-demo-agent       "Add add(a, b), call it with 2 and 3"       ->  stdout "hi\n2026\n5\n"
-```
 
-Suspend in the middle of a turn. The agent was asked to run a script that
-sleeps 25 s; the actor was suspended 2 s after the `shell` call started.
+What each branch's `node hello.js` printed:
 
 ```
-239 actions.requested  shell {"command":"node /workspace/project/wait.js","timeout":60000}
-    (suspend; no further event for this turn)
+demo-agent       hi\n2026\n5\n
+demo-agent-fork  hi\n2026\n42\n
 ```
 
-What happened after the wake:
-
-- The interrupted turn has no terminal event. The log just stops.
-- A follow-up sent 3 s after the wake was accepted (HTTP 200, new token) but
-  did not start a turn. It ran five minutes later, when the next message
-  arrived. The Agent SDK keeps a per-session lock file under the state root
-  with a 30 s staleness window; the snapshot restored it with a fresh mtime,
-  so the new server treated the dead turn as live and queued the message.
-- Each new message preempts the running turn (the SDK's default). Two of my
-  own messages cancelled the recovery turns.
-- Once a turn ran undisturbed, the agent found the interrupted call in its
-  history ("both `node wait.js` runs were interrupted before the shell tool
-  returned") and offered to rerun it. Told to go ahead, it ran the script and
-  reported `done` after 25.3 s.
-
-Seven turns on this session cost $0.094 of Cursor usage (`/v1/session/:id/cost`).
-
-## Egress
-
-The intent was Substrate's credential injection: a placeholder key in the
-sandbox, the real key added by the egress gateway. It does not work for this
-SDK. The SDK posts the raw key once to `api2.cursor.sh/auth/exchange_user_api_key`,
-gets a JWT, and sends the JWT on every other `api2.cursor.sh` call. Substrate's
-egress rules match hostname and port, not path, so a `replaceHeaders` effect on
-`api2.cursor.sh` also overwrites the JWT and Cursor answers 401. The demo
-therefore puts the key in the actor's environment and uses a plain allow
-policy. A path-scoped rule would fix it.
+Seven turns on this session, including the interruption test, cost $0.094 of Cursor usage (`/v1/session/:id/cost`).
 
 ## Notes
 
-- The Plus plan serves `composer-2.5` only with `fast=false`. A plain
-  `model: "composer-2.5"` fails with "Model unavailable on Plus".
-- Substrate ignores the image's `WORKDIR`; the `CMD` uses absolute paths.
-- One worker per node on a 2-core machine; the second replica never schedules.
+- The Plus plan serves `composer-2.5` only with `fast=false`. A plain `model: "composer-2.5"` fails with "Model unavailable on Plus".
+- Substrate ignores the image's `WORKDIR`, so the `CMD` uses absolute paths.
