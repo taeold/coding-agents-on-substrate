@@ -1,0 +1,39 @@
+metadata:
+  atespace: ate-demo-fx
+  name: fx-durable-data
+workerSelector:
+  matchLabels:
+    workload: fx-durable
+containers:
+- name: fx-durable
+  image: IMAGE
+  env:
+  - name: AI_GATEWAY_API_KEY
+    value: ate-placeholder-key
+  - name: NODE_EXTRA_CA_CERTS
+    value: /run/ate/trust-bundle.pem
+  wakeupProbe:
+    httpGet:
+      path: /readyz
+      port: 80
+  volumeMounts:
+  - name: workspace
+    mountPath: /workspace
+  - name: system-info
+    mountPath: /run/ate
+resources:
+  limits:
+    cpuMillicores: 1000
+    memoryBytes: 536870912
+snapshotConfig:
+  preferredFidelity: SNAPSHOT_FIDELITY_VOLUMES
+volumes:
+- name: workspace
+  durableDir: {}
+- name: system-info
+  systemInfo:
+    dataSources:
+    - trustBundle:
+        names:
+        - egress-mitm.ate.dev
+        path: trust-bundle.pem

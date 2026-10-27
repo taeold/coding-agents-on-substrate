@@ -1,0 +1,27 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ate-demo-cursor
+---
+apiVersion: ate.dev/v1
+kind: WorkerPool
+metadata:
+  name: cursor-agent
+  namespace: ate-demo-cursor
+  labels:
+    workload: cursor-agent
+spec:
+  # A 2-core kind node fits one worker.
+  replicas: 1
+  # `hack/install-ate-kind.sh publish worker-images` prints the digest ref to substitute.
+  workerImage: ko://go.ate.dev/substrate/cmd/ateworker-gvisor
+  sandboxClasses:
+  - name: gvisor
+  template:
+    resources:
+      limits:
+        cpu: "1"
+        memory: 1Gi
+      requests:
+        cpu: 250m
+        memory: 1Gi

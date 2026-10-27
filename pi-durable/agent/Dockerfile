@@ -11,4 +11,4 @@ RUN mkdir -p /workspace
 
 EXPOSE 80
 
-CMD ["node", "server.ts"]
+CMD ["node", "/app/server.ts"]

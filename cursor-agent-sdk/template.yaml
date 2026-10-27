@@ -1,0 +1,39 @@
+metadata:
+  atespace: ate-demo-cursor
+  name: cursor-agent
+workerSelector:
+  matchLabels:
+    workload: cursor-agent
+containers:
+- name: cursor-agent
+  image: IMAGE
+  env:
+  - name: CURSOR_API_KEY
+    value: crsr_0000000000000000000000000000000000000000000000000000000000000000
+  - name: NODE_EXTRA_CA_CERTS
+    value: /run/ate/trust-bundle.pem
+  wakeupProbe:
+    httpGet:
+      path: /v1/info
+      port: 80
+  volumeMounts:
+  - name: workspace
+    mountPath: /workspace
+  - name: system-info
+    mountPath: /run/ate
+resources:
+  limits:
+    cpuMillicores: 1000
+    memoryBytes: 1073741824
+snapshotConfig:
+  preferredFidelity: SNAPSHOT_FIDELITY_VOLUMES
+volumes:
+- name: workspace
+  durableDir: {}
+- name: system-info
+  systemInfo:
+    dataSources:
+    - trustBundle:
+        names:
+        - egress-mitm.ate.dev
+        path: trust-bundle.pem

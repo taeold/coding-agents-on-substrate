@@ -1,0 +1,8 @@
+rules:
+- https:
+    hostnames:
+    - "ai-gateway.vercel.sh"
+    effects:
+      replaceHeaders:
+      - header: authorization
+        credentialUri: ate-secret://k8s.io/default/ate-demo-fx/llm-credentials/ai-gateway-api-key

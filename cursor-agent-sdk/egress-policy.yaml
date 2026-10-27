@@ -1,0 +1,9 @@
+# No header injection: the SDK exchanges CURSOR_API_KEY for a JWT at
+# api2.cursor.sh/auth/exchange_user_api_key and sends the JWT on every other
+# api2.cursor.sh call. Substrate rules match host and port, not path, so a
+# replaceHeaders effect on api2.cursor.sh would overwrite the JWT too.
+rules:
+- https:
+    hostnames:
+    - "api2.cursor.sh"
+    - "api.cursor.com"

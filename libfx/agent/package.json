@@ -1,0 +1,16 @@
+{
+  "name": "fx-durable-substrate",
+  "version": "0.1.0",
+  "description": "A simple durable AI coding agent built with libfx running on Agent Substrate.",
+  "type": "module",
+  "license": "Apache-2.0",
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "scripts": {
+    "start": "node server.ts"
+  },
+  "dependencies": {
+    "libfx": "^0.0.14"
+  }
+}

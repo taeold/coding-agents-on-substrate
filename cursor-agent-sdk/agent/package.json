@@ -1,0 +1,8 @@
+{
+  "name": "cursor-agent",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@grok/agent-sdk": "0.3.0"
+  }
+}

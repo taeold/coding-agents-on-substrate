@@ -6,10 +6,7 @@ workerSelector:
     workload: pi-durable
 containers:
 - name: pi-durable
-  image: localhost:5001/pi-durable-actor@sha256:0a0695101832ffab6a8f5627d21afd22e3b7cd28940777d7f237c1894d82437b
-  command:
-  - node
-  - /app/server.ts
+  image: IMAGE
   env:
   - name: GEMINI_API_KEY
     value: ate-placeholder-key
@@ -19,7 +16,6 @@ containers:
     httpGet:
       path: /readyz
       port: 80
-    timeoutSeconds: 30
   volumeMounts:
   - name: workspace
     mountPath: /workspace
@@ -27,18 +23,10 @@ containers:
     mountPath: /run/ate
 resources:
   limits:
-  - name: cpu
-    quantity: "1"
-  - name: memory
-    quantity: 512Mi
+    cpuMillicores: 1000
+    memoryBytes: 536870912
 snapshotConfig:
-  onPause: SNAPSHOT_CONTENT_SCOPE_DATA
-  onCommit: SNAPSHOT_CONTENT_SCOPE_DATA
-  # Uses the bundled rustfs bucket on kind; on GKE, set to gs://<your-gcs-bucket>/...
-  storageLocation: gs://ate-snapshots/ate-demo-pi-data/
-sandboxConfig:
-  sandboxClass: SANDBOX_CLASS_GVISOR
-  configName: gvisor-default
+  preferredFidelity: SNAPSHOT_FIDELITY_VOLUMES
 volumes:
 - name: workspace
   durableDir: {}

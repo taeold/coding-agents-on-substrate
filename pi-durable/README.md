@@ -1,6 +1,8 @@
-# pi-durable-substrate
+# pi-durable
 
 A simple durable AI coding agent built with [@earendil-works/pi-durable](https://github.com/earendil-works/pi/tree/main/packages/durable) running on [Agent Substrate](https://github.com/agent-substrate/substrate).
+
+The responses below are from 2026-10-06, against Substrate as of that date; the exact Substrate commit was not recorded. The template boots on Substrate `551dd54e`.
 
 ## agent/server.ts
 
@@ -60,57 +62,34 @@ Agent Substrate runs each agent as an isolated actor with `/workspace` mounted a
 
 1. **Suspend and auto-resume**: When you suspend an actor (`kubectl ate suspend actor`), Agent Substrate sends `SIGTERM` so `pi-durable` flushes SQLite, snapshots `/workspace` to object storage, and stops the container. When the next HTTP request arrives for that actor, the router restores `/workspace` onto a worker pod and wakes the server back up before forwarding the request. On local kind, snapshots are stored in the bundled in-cluster S3 store (rustfs); on GKE, atelet and ate-api-server write snapshots to GCS using Workload Identity without any storage credentials in the actor.
 2. **Checkpoint and fork**: Because both the agent history (`agent.sqlite`) and the working files live in `/workspace`, you can tag a suspended actor (`kubectl ate create tag`) and create a new actor from that tag (`kubectl ate create actor --tag`). Both actors start from the same history and files, then diverge on subsequent requests.
-3. **Egress credential injection**: The sandbox runs with a placeholder `GEMINI_API_KEY`. Outbound calls to `generativelanguage.googleapis.com` pass through the Agent Substrate egress proxy, which injects the real API key from `egress-policy.yaml` so secrets never enter the sandbox or its snapshots.
+3. **Egress credential injection**: The sandbox runs with a placeholder `GEMINI_API_KEY`. Outbound calls to `generativelanguage.googleapis.com` pass through the Agent Substrate egress proxy, which injects the real API key from the Kubernetes Secret that `egress-policy.yaml` names, so secrets never enter the sandbox or its snapshots.
+
+## Mid-turn interruption
+
+Not exercised in this demo. Per the `pi-durable` README, work interrupted by a crash or close stays pending, and `harness.resume()` at startup continues the run the last process left unfinished. A tool call cut off mid-run reruns only if the tool is declared `replay: "safe"`; otherwise the model gets an `interrupted` error result with the output committed so far. On Substrate, the restart is the actor's next wake.
 
 ## Quickstart (local Kubernetes with kind)
 
-### 1. Start Agent Substrate on a local kind cluster
+### 1. Set up the cluster
 
-Make sure you have Go, Docker, and `kubectl` installed, then spin up the local cluster, publish the worker runtime image, and install `kubectl-ate`:
-
-```bash
-git clone https://github.com/agent-substrate/substrate.git
-cd substrate
-hack/create-kind-cluster.sh
-hack/install-ate-kind.sh --deploy-ate-system --credential-provider='{"name":"k8s.io"}'
-go run ./cmd/ate-setup --kind publish worker-images
-go install ./cmd/kubectl-ate
-cd ..
-```
+Follow [../setup/README.md](../setup/README.md): install Substrate, keep the worker image ref in `$WORKER`, start the client pod, and grant `ate-demo-pi` its namespace for credential injection. Run the commands below from this directory.
 
 ### 2. Build and deploy the agent template
 
-Set your `GEMINI_API_KEY`, store it in a Kubernetes Secret for the egress proxy, and deploy the worker pool and actor template:
+Build the agent image, deploy the worker pool and actor template, and store your `GEMINI_API_KEY` in a Kubernetes Secret for the egress proxy:
 
 ```bash
-export GEMINI_API_KEY="your-gemini-api-key"
+docker build -t localhost:5001/pi-durable:latest ./agent
+docker push localhost:5001/pi-durable:latest
+IMAGE=$(docker inspect --format='{{index .RepoDigests 0}}' localhost:5001/pi-durable:latest)
 
-# Build and push the agent image to the local kind registry
-docker build -t localhost:5001/pi-durable-actor:latest ./agent
-docker push localhost:5001/pi-durable-actor:latest
-DIGEST=$(docker inspect --format='{{index .RepoDigests 0}}' localhost:5001/pi-durable-actor:latest)
-sed -i "s|image: .*|image: ${DIGEST}|" template.yaml
-
-# Set the substrate node version in workerpool.yaml and deploy
-VERSION=$(kubectl get ds -n ate-system -l app=atelet -o jsonpath='{.items[0].metadata.labels.ate\.dev/substrate-version}')
-sed -i "s|SUBSTRATE_VERSION|${VERSION}|" workerpool.yaml
-kubectl apply -f workerpool.yaml
-kubectl -n ate-demo-pi rollout status deployment/pi-durable
-
-# Create the atespace and actor template, then wait until GOLDEN TAG is populated
+sed "s|ko://go.ate.dev/substrate/cmd/ateworker-gvisor|$WORKER|" workerpool.yaml | kubectl apply -f -
 kubectl ate create atespace ate-demo-pi
-kubectl ate create actor-template -f template.yaml
-kubectl ate get actor-template pi-durable-data -a ate-demo-pi
+sed "s|image: IMAGE|image: $IMAGE|" template.yaml | kubectl ate create actor-template -f -
+kubectl ate get actor-template pi-durable-data -a ate-demo-pi   # wait for GOLDEN TAG
 
-# Create the Gemini API key secret and allow ate-demo-pi to use it at the egress proxy
 kubectl -n ate-demo-pi create secret generic llm-credentials \
-  --from-literal=gemini-api-key="${GEMINI_API_KEY}"
-kubectl -n ate-system patch configmap k8s-credential-provider-namespace-policy \
-  --type merge -p '{"data":{"namespace-policy.yaml":"policies:\n- atespace: ate-demo-pi\n  allowedNamespaces:\n  - ate-demo-pi\n"}}'
-kubectl -n ate-system rollout restart deployment/k8s-credential-provider
-
-# Port-forward the router
-kubectl port-forward -n ate-system svc/atenet-router 8000:80 &
+  --from-literal=gemini-api-key="$GEMINI_API_KEY"
 ```
 
 ### 3. Create an actor and run Turn 1
@@ -119,8 +98,7 @@ kubectl port-forward -n ate-system svc/atenet-router 8000:80 &
 kubectl ate create actor demo-agent --template pi-durable-data -a ate-demo-pi
 kubectl ate create egress-policy demo-agent -a ate-demo-pi -f egress-policy.yaml
 
-curl -X POST http://localhost:8000/submit \
-  -H "ate-target-actor: ate-demo-pi/demo-agent" \
+../setup/ate-curl ate-demo-pi/demo-agent /submit \
   -H "Content-Type: application/json" \
   -d '{"prompt": "Create app.js with add(a, b) and a test.js that verifies it."}'
 ```
@@ -164,14 +142,12 @@ Both actors auto-resume on demand from the shared Turn 1 history (`entry: 7..21`
 
 ```bash
 # Original actor continues on Branch A
-curl -X POST http://localhost:8000/submit \
-  -H "ate-target-actor: ate-demo-pi/demo-agent" \
+../setup/ate-curl ate-demo-pi/demo-agent /submit \
   -H "Content-Type: application/json" \
   -d '{"prompt": "Add multiply(a, b) and structured logging to app.js."}'
 
 # Forked actor continues on Branch B
-curl -X POST http://localhost:8000/submit \
-  -H "ate-target-actor: ate-demo-pi/demo-agent-fork" \
+../setup/ate-curl ate-demo-pi/demo-agent-fork /submit \
   -H "Content-Type: application/json" \
   -d '{"prompt": "Add divide(a, b) and edge-case tests to test.js."}'
 ```

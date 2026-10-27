@@ -3,7 +3,7 @@ kind: Namespace
 metadata:
   name: ate-demo-pi
 ---
-apiVersion: ate.dev/v1alpha1
+apiVersion: ate.dev/v1
 kind: WorkerPool
 metadata:
   name: pi-durable
@@ -11,11 +11,13 @@ metadata:
   labels:
     workload: pi-durable
 spec:
-  replicas: 2
-  workerImage: localhost:5001/ateom-gvisor:latest
+  # A 2-core kind node fits one worker.
+  replicas: 1
+  # `hack/install-ate-kind.sh publish worker-images` prints the digest ref to substitute.
+  workerImage: ko://go.ate.dev/substrate/cmd/ateworker-gvisor
+  sandboxClasses:
+  - name: gvisor
   template:
-    nodeSelector:
-      ate.dev/substrate-version: "SUBSTRATE_VERSION"
     resources:
       limits:
         cpu: "1"
