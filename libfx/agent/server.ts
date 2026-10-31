@@ -35,5 +35,8 @@ const server = http.createServer(async (req, res) => {
 process.on("SIGTERM", async () => {
   await agent.close();
   server.close(() => process.exit(0));
+  // /events streams stay open until the client leaves, and a dropped client
+  // can go unnoticed behind a proxy, so end them instead of waiting.
+  server.closeAllConnections();
 });
 server.listen(80, "0.0.0.0");
